@@ -1,0 +1,11 @@
+# personal recordings and maps (they show the inside of a home)
+data/
+*.bin
+*.npz
+*.dxf
+*.png
+!docs/*.png
+
+__pycache__/
+*.pyc
+lds_probe/build/
