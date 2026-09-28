@@ -73,25 +73,40 @@ class Lds07rrNode(Node):
         pwm_chip = p("pwm_chip", 0).value
         pwm_channel = p("pwm_channel", 0).value
         pwm_freq = p("pwm_freq", 20000).value
+        self.max_duty = float(p("max_duty", 0.7).value)   # the motor needs ~35-60 % for 300 rpm on 5 V
+        self.give_up_s = float(p("give_up_s", 10.0).value)  # no scans for this long: stop the motor...
+        self.retry_s = float(p("retry_s", 30.0).value)      # ...and try again after this pause
 
         self.pub = self.create_publisher(LaserScan, "scan", qos_profile_sensor_data)
+        # Open the serial port before touching the motor: if it fails, the motor never starts.
+        self.ser = serial.Serial(self.port, self.baud, timeout=0.2)
         self.pwm = SysfsPwm(pwm_chip, pwm_channel, pwm_freq)
-        self.duty = 350 / 1023                            # soft start, like the firmware
+        self.pwm_name = f"pwmchip{pwm_chip}/pwm{pwm_channel}"
+        self.start_duty = 350 / 1023                      # soft start, like the firmware
+        self.duty = self.start_duty
         self.pwm.set(self.duty)
+        try:
+            self._setup_rest()
+        except Exception:
+            self.pwm.set(0)
+            raise
+
+    def _setup_rest(self):
         self.rpm_sum, self.rpm_n = 0.0, 0
         self.last_pkt = 0.0
+        self.stale_since = time.monotonic()
+        self.paused_until = 0.0
         self.last_byte = time.monotonic()
         self.status_pkts = 0
         self.warned = set()
         self.lock = threading.Lock()
 
-        self.ser = serial.Serial(self.port, self.baud, timeout=0.2)
         self.running = True
         self.thread = threading.Thread(target=self.reader, daemon=True)
         self.thread.start()
         self.create_timer(0.1, self.control)
         self.create_timer(2.0, self.health)
-        self.get_logger().info(f"LDS07RR on {self.port}, motor PWM pwmchip{pwm_chip}/pwm{pwm_channel}, "
+        self.get_logger().info(f"LDS07RR on {self.port}, motor PWM {self.pwm_name}, max duty {self.max_duty:.0%}, "
                                f"target {self.target_rpm:.0f} rpm")
 
     # ------------------------------------------------------------------ data
@@ -106,7 +121,8 @@ class Lds07rrNode(Node):
         buf = bytearray()
         ranges = [math.inf] * 360
         intens = [0.0] * 360
-        last_idx, first, rev_start = None, True, time.monotonic()
+        last_idx, first = None, True
+        rev_start, rev_stamp = time.monotonic(), self.get_clock().now()
         while self.running:
             chunk = self.ser.read(2048)
             if not chunk:
@@ -134,10 +150,10 @@ class Lds07rrNode(Node):
                     self.rpm_n += 1
                     self.last_pkt = time.monotonic()
                 if last_idx is not None and idx < last_idx:   # new revolution
-                    now = time.monotonic()
+                    now, stamp = time.monotonic(), self.get_clock().now()
                     if not first and self.running:
-                        self.publish(ranges, intens, now - rev_start)
-                    first, rev_start = False, now
+                        self.publish(ranges, intens, now - rev_start, rev_stamp)
+                    first, rev_start, rev_stamp = False, now, stamp
                     ranges = [math.inf] * 360
                     intens = [0.0] * 360
                 last_idx = idx
@@ -153,15 +169,17 @@ class Lds07rrNode(Node):
                     ranges[ray] = dist
                     intens[ray] = float(pkt[o + 2] | pkt[o + 3] << 8)
 
-    def publish(self, ranges, intens, scan_time):
+    def publish(self, ranges, intens, scan_time, stamp):
         msg = LaserScan()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp.to_msg()                 # start of the revolution
         msg.header.frame_id = self.frame_id
         msg.angle_min = 0.0
         msg.angle_increment = 2 * math.pi / 360
         msg.angle_max = msg.angle_increment * 359
         msg.scan_time = float(scan_time)
-        msg.time_increment = float(scan_time) / 360
+        # The head turns clockwise but the rays are stored counter-clockwise, so the measurement time
+        # is not linear in the ray index; 0 = "unknown" (no per-ray de-skew) rather than a wrong value.
+        msg.time_increment = 0.0
         msg.range_min = self.range_min
         msg.range_max = self.range_max
         msg.ranges = ranges
@@ -170,15 +188,29 @@ class Lds07rrNode(Node):
 
     # ------------------------------------------------------------------ motor
     def control(self):
+        now = time.monotonic()
         with self.lock:
             n, s = self.rpm_n, self.rpm_sum
             self.rpm_sum, self.rpm_n = 0.0, 0
-            stale = time.monotonic() - self.last_pkt > 0.5
-        if stale:
-            self.duty += 20 / 1023           # no measurement packets: ramp up gently
-        elif n:
-            self.duty += 0.3 * (self.target_rpm - s / n) / 1023
-        self.duty = min(max(self.duty, 0.0), 1.0)
+            stale = now - self.last_pkt > 0.5
+        if now < self.paused_until:          # gave up earlier: motor off until the retry time
+            self.duty = 0.0
+        elif stale:
+            if self.duty == 0.0:             # retry after a pause: soft start again
+                self.duty = self.start_duty
+                self.stale_since = now
+            if now - self.stale_since > self.give_up_s:
+                self.duty = 0.0
+                self.paused_until = now + self.retry_s
+                self.get_logger().warn(f"no scans for {self.give_up_s:.0f} s: motor off, "
+                                       f"retrying in {self.retry_s:.0f} s")
+            else:
+                self.duty += 20 / 1023       # no measurement packets: ramp up gently
+        else:
+            self.stale_since = now
+            if n:
+                self.duty += 0.3 * (self.target_rpm - s / n) / 1023
+        self.duty = min(max(self.duty, 0.0), self.max_duty)
         self.pwm.set(self.duty)
         self.rpm = s / n if n else 0.0
 
@@ -211,7 +243,11 @@ class Lds07rrNode(Node):
 
 def main():
     rclpy.init()
-    node = Lds07rrNode()
+    try:
+        node = Lds07rrNode()
+    except Exception:
+        rclpy.shutdown()
+        raise
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

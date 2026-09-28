@@ -290,7 +290,19 @@ cd ~/robot_ws && colcon build --symlink-install && source install/setup.bash
 ros2 launch lds07rr_driver lds07rr.launch.py            # driver + static TF base_link -> laser
 ```
 
-Parameters: `port`, `target_rpm` (300), `range_min`/`range_max` (0.12/6.0 m), `clockwise` (true), `angle_offset_deg`, `pwm_chip`/`pwm_channel`/`pwm_freq` (0/0/20000).
+| Parameter | Default | Meaning |
+|---|---|---|
+| `port` | `/dev/ttyAMA3` | UART the lidar TX is wired to |
+| `frame_id` | `laser` | frame of the published `LaserScan` |
+| `target_rpm` | 300 | motor speed setpoint |
+| `range_min` / `range_max` | 0.12 / 6.0 m | samples outside are dropped (`inf`) |
+| `clockwise` | true | the LDS07RR measures clockwise; rays are published counter-clockwise (ROS convention) |
+| `angle_offset_deg` | 0 | rotates the scan, applied in the lidar's own (clockwise) degrees before the CW→CCW flip |
+| `pwm_chip` / `pwm_channel` / `pwm_freq` | 0 / 0 / 20000 | hardware PWM for the motor |
+| `max_duty` | 0.7 | upper limit for the motor PWM (300 rpm needs roughly 35–60 % on 5 V) |
+| `give_up_s` / `retry_s` | 10 / 30 s | no scans for `give_up_s`: motor off, soft-start again after `retry_s` |
+
+Failure behaviour: the serial port is opened before the motor is touched (a missing port never starts the motor), the motor is switched off on every exit path, and without scans it never runs above `max_duty` for longer than `give_up_s`. `header.stamp` is the start of the revolution; `time_increment` is 0 because the clockwise measurement order is not linear in the counter-clockwise ray index.
 
 ### `decode_check.py`
 
