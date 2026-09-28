@@ -9,6 +9,7 @@ using the speed field of the lidar's own 0xFA packets.
 """
 import math
 import os
+import signal
 import threading
 import time
 
@@ -57,6 +58,10 @@ class SysfsPwm:
     def set(self, fraction):
         self._write("duty_cycle", str(int(self.period * min(max(fraction, 0.0), 1.0))))
 
+    def off(self):
+        self._write("duty_cycle", "0")
+        self._write("enable", "0")
+
 
 class Lds07rrNode(Node):
     def __init__(self):
@@ -88,7 +93,7 @@ class Lds07rrNode(Node):
         try:
             self._setup_rest()
         except Exception:
-            self.pwm.set(0)
+            self.pwm.off()
             raise
 
     def _setup_rest(self):
@@ -115,7 +120,15 @@ class Lds07rrNode(Node):
             self._read_loop()
         except Exception as e:  # noqa: BLE001 - during shutdown the port/publisher may already be gone
             if self.running:
-                self.get_logger().error(f"reader stopped: {e!r}")
+                # the node is useless without its reader: motor off and stop the whole process, so the
+                # launch file / systemd can restart it instead of cycling the motor forever
+                self.get_logger().error(f"reader stopped: {e!r}; shutting down")
+                self.running = False
+                try:
+                    self.pwm.off()
+                except OSError:
+                    pass
+                os.kill(os.getpid(), signal.SIGINT)
 
     def _read_loop(self):
         buf = bytearray()
@@ -235,7 +248,7 @@ class Lds07rrNode(Node):
         self.running = False
         self.thread.join(timeout=1.0)
         try:
-            self.pwm.set(0)
+            self.pwm.off()
         except OSError:
             pass
         super().destroy_node()

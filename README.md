@@ -302,7 +302,7 @@ ros2 launch lds07rr_driver lds07rr.launch.py            # driver + static TF bas
 | `max_duty` | 0.7 | upper limit for the motor PWM (300 rpm needs roughly 35–60 % on 5 V) |
 | `give_up_s` / `retry_s` | 10 / 30 s | no scans for `give_up_s`: motor off, soft-start again after `retry_s` |
 
-Failure behaviour: the serial port is opened before the motor is touched (a missing port never starts the motor), the motor is switched off on every exit path, and without scans it never runs above `max_duty` for longer than `give_up_s`. `header.stamp` is the start of the revolution; `time_increment` is 0 because the clockwise measurement order is not linear in the counter-clockwise ray index.
+Failure behaviour: the serial port is opened before the motor is touched (a missing port never starts the motor), the PWM is disabled on every normal exit (including a failed setup or a dead reader thread, which also stops the node so it can be restarted), and without scans the motor never runs above `max_duty` for longer than `give_up_s`. The sysfs PWM keeps its value if the process is killed hard (SIGKILL, crash), so under systemd add e.g. `ExecStopPost=-/bin/sh -c 'd=/sys/class/pwm/pwmchip0/pwm0; [ -d $$d ] && echo 0 > $$d/duty_cycle && echo 0 > $$d/enable || true'`. The launch file shuts down when the driver exits. `header.stamp` is the start of the revolution; `time_increment` is 0 because the clockwise measurement order is not linear in the counter-clockwise ray index.
 
 ### `decode_check.py`
 
