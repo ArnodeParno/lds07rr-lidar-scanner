@@ -36,6 +36,7 @@ There was no public documentation for this module when we started. Everything be
 | Live 360° radar view on the PC | ✅ |
 | 2D map building (ICP scan matching + occupancy grid), record & replay | ✅ works indoors, see limitations |
 | Automatic floor plan (walls, dimensions, PNG + DXF export) | 🧪 experimental |
+| **ROS 2 driver: lidar straight on a Raspberry Pi** (UART + hardware PWM, no ESP32), `sensor_msgs/LaserScan` at ~4.9 Hz | ✅ |
 
 Measured on the test unit:
 
@@ -158,7 +159,7 @@ def neato_checksum(pkt):          # pkt = the 22 bytes
 ### Behaviour worth knowing
 
 - **Speed matters.** The module is designed for ~300 rpm (5 Hz). At ~500 rpm only ~16 % of the samples are valid; at 300 rpm 43–59 %.
-- **Stopping kills it.** If the head stops (or slows down a lot) while measuring, the module goes **silent until it is power-cycled**. Keep the motor running, and don't reset the controller mid-session (see [pitfalls](#lessons-learned--pitfalls)).
+- **Stopped = silent.** When the head stops after measuring, the module goes completely silent (not even `0xAA` status packets). Spin it up again and the scans come back — no power cycle needed. (We first thought it needed one; that turned out to be an ESP32 brown-out.)
 - **Range** is about 0.12–6 m indoors. Direct sunlight (infrared) reduces the number of valid samples considerably.
 
 ---
@@ -254,6 +255,43 @@ py floorplan.py map.npz --manhattan      # force walls to 0°/90° after auto-al
 
 Extracts walls (RANSAC line fitting at any angle, or axis-aligned runs with `--manhattan`), cleans up the floor area, annotates wall lengths and exports **PNG** and **DXF** (walls on layer `WALLS`, millimetres) for CAD. Dimensions are indicative (±5–10 cm at best).
 
+### ROS 2 driver on a Raspberry Pi (no ESP32)
+
+`ros2/lds07rr_driver` is an `ament_python` package for ROS 2 (tested on **Jazzy, Ubuntu 24.04, Raspberry Pi 4**). The Pi reads the lidar on a spare UART and drives the motor with its hardware PWM; the node runs the same soft-start + integrating speed controller as the firmware and publishes `sensor_msgs/LaserScan` on `/scan` once per revolution (360 rays, counter-clockwise, `frame_id: laser`).
+
+Measured: `/scan` at 4.88–4.91 Hz (std dev < 1 ms), ~234 valid ranges per scan.
+
+**Wiring (Pi 4):**
+
+| From | Pi header pin |
+|---|---|
+| LDS orange (+5 V) and motor red (+) | pin 2 (5 V) |
+| 1000 µF capacitor | + to that 5 V point, − to GND |
+| LDS white (GND) | pin 14 (GND) |
+| LDS yellow (TX) | **pin 29 (GPIO5, UART3 RX)** |
+| motor black (−) | BC547 collector |
+| BC547 emitter | pin 9 (GND) |
+| BC547 base | 200 Ω → **pin 12 (GPIO18, PWM0)** |
+
+The primary UART (GPIO14/15) is shared with Bluetooth on a Pi 4, so the lidar uses UART3 instead and Bluetooth stays available.
+
+**Pi setup** (`/boot/firmware/config.txt`, then reboot):
+
+```
+dtparam=audio=off          # the analog audio uses the same PWM hardware
+dtoverlay=uart3            # lidar TX on GPIO5 -> /dev/ttyAMA3 (name may differ per image)
+dtoverlay=pwm,pin=18,func=2
+```
+
+```bash
+sudo cp ros2/lds07rr_driver/config/99-lds07rr.rules /etc/udev/rules.d/   # PWM access for group dialout
+mkdir -p ~/robot_ws/src && cp -r ros2/lds07rr_driver ~/robot_ws/src/
+cd ~/robot_ws && colcon build --symlink-install && source install/setup.bash
+ros2 launch lds07rr_driver lds07rr.launch.py            # driver + static TF base_link -> laser
+```
+
+Parameters: `port`, `target_rpm` (300), `range_min`/`range_max` (0.12/6.0 m), `clockwise` (true), `angle_offset_deg`, `pwm_chip`/`pwm_channel`/`pwm_freq` (0/0/20000).
+
 ### `decode_check.py`
 
 Quick statistics for a recording: packets, rpm over time, share of valid samples.
@@ -279,7 +317,7 @@ Tools that made this fast: the ESP32 `scan` command (all four lines at once, ~1 
 - **Don't trust generated pinouts.** Two different chatbot answers gave two different, both wrong, pinouts for this module (one claimed a 4-pin connector with PWM motor control). Measure.
 - **~1 mA and "nothing happens" can mean you are powering the chip through a data pin.**
 - **Brown-outs:** a small DC motor on the ESP32's 3.3 V rail can reset it. Use VIN, a big capacitor and a soft start. The firmware's `info` shows the last reset reason.
-- **Opening a serial port resets most ESP32 boards** (DTR/RTS auto-reset). A reset stops the motor, and the lidar then goes silent until power-cycled. `lds.py` opens the port with DTR/RTS low to avoid this.
+- **Opening a serial port resets most ESP32 boards** (DTR/RTS auto-reset). A reset stops the motor for over a second. `lds.py` opens the port with DTR/RTS low to avoid this.
 - A **25 V 1000 µF** capacitor on a live 5 V rail causes an inrush that can itself brown out the ESP32 — fit it with the power off.
 - The lidar needs **~300 rpm**; too fast is just as bad as too slow.
 
@@ -291,7 +329,6 @@ Tools that made this fast: the ESP32 `scan` command (all four lines at once, ~1 
 - **Loop closure:** drift accumulates; returning to a known place does not pull the map straight yet.
 - **Floor plans** are only as good as the map; wall extraction is basic.
 - **Outdoors:** sunlight blinds the IR sensor, and open lawns give ICP nothing to lock on to.
-- **Lidar power switch:** a MOSFET on the lidar's 5 V would let the firmware power-cycle it automatically when it goes silent.
 - **3D:** since the lidar only sees a horizontal slice, recordings at several known heights could be aligned and stacked into a point cloud.
 
 Contributions and measurements from other LDS07RR units are very welcome — especially what the brown wire does and the layout of the `0xAA` status packet.

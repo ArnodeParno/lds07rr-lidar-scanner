@@ -1,0 +1,3 @@
+# Give the dialout group write access to the hardware PWM (motor of the LDS07RR), so the
+# driver does not need root. Install: sudo cp 99-lds07rr.rules /etc/udev/rules.d/ && sudo udevadm trigger
+SUBSYSTEM=="pwm*", PROGRAM="/bin/sh -c 'chown -R root:dialout /sys/class/pwm && chmod -R 770 /sys/class/pwm; chown -R root:dialout /sys/devices/platform/soc/*.pwm/pwm/pwmchip* && chmod -R 770 /sys/devices/platform/soc/*.pwm/pwm/pwmchip*'"

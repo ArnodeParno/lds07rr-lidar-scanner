@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>lds07rr_driver</name>
+  <version>0.1.0</version>
+  <description>ROS 2 driver for the Roborock LDS07RR lidar on a Raspberry Pi UART, with motor speed control via hardware PWM.</description>
+  <maintainer email="ArnodeParno@users.noreply.github.com">ArnodeParno</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
