@@ -11,7 +11,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("port", default_value="/dev/ttyAMA3"),
         DeclareLaunchArgument("laser_height", default_value="0.15",
-                              doc="height of the lidar above base_link in metres"),
+                              description="height of the lidar above base_link in metres"),
         Node(package="lds07rr_driver", executable="lds07rr_node", name="lds07rr",
              parameters=[{"port": port}], output="screen"),
         Node(package="tf2_ros", executable="static_transform_publisher", name="laser_tf",

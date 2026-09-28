@@ -186,8 +186,7 @@ class Lds07rrNode(Node):
         silent = time.monotonic() - self.last_byte > 3
         spinning = time.monotonic() - self.last_pkt < 1
         if silent:
-            self._warn("silent", "no data from the lidar: check wiring/5 V; after a stall it needs a "
-                                 "power cycle")
+            self._warn("silent", "no data from the lidar: check the wiring and its 5 V supply")
         elif not spinning and self.status_pkts:
             self._warn("status", f"lidar sends status packets but no scans (duty {self.duty:.0%}): "
                                  "is the motor turning?")
